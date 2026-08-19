@@ -1,0 +1,27 @@
+{
+  "name": "ncn-server",
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "migrate": "node migrate.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.1",
+    "nanoid": "^5.0.7",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  }
+}
