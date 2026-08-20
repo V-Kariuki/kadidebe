@@ -110,10 +110,10 @@ export const api = {
 };
 
 export function connectLiveSync(onMessage) {
+  const wsOrigin = import.meta.env.VITE_WS_URL || '';
   let wsUrl;
-  if (API_ORIGIN) {
-    // Derive ws(s):// from the configured http(s) API origin.
-    wsUrl = API_ORIGIN.replace(/^http/, 'ws') + '/ws';
+  if (wsOrigin) {
+    wsUrl = wsOrigin.replace(/^http/, 'ws') + '/ws';
   } else {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     wsUrl = `${protocol}://${window.location.host}/ws`;
