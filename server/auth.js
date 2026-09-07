@@ -17,9 +17,16 @@ const TOKEN_TTL = '8h';
 
 export function signToken(user) {
   return jwt.sign(
-    { sub: user.id, email: user.email, name: user.name, role: user.role, wardId: user.ward_id || null },
+    {
+      sub: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      jurisdictionType: user.jurisdiction_type || null,
+      jurisdictionId: user.jurisdiction_id || null
+    },
     JWT_SECRET,
-    { expiresIn: TOKEN_TTL }
+    { expiresIn: TOKEN_TTL, algorithm: 'HS256' }
   );
 }
 
@@ -61,7 +68,7 @@ export function requireAuth(req, res, next) {
   const token = req.cookies?.[TOKEN_COOKIE];
   if (!token) return res.status(401).json({ error: 'Not signed in' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     next();
   } catch {
     return res.status(401).json({ error: 'Session expired, please sign in again' });
