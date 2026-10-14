@@ -4,7 +4,49 @@ const jurisdictionType = z.enum(['ward', 'constituency', 'county', 'national']);
 
 export const loginSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(1)
+  password: z.string().min(1),
+  // Only needed when the same email exists in more than one instance.
+  tenantSlug: z.string().trim().min(1).max(60).optional().nullable()
+});
+
+const slugField = z.string().trim().min(2).max(60).regex(/^[a-z0-9][a-z0-9-]*$/, 'Use lowercase letters, numbers and hyphens only');
+const jurisdictionTypeField = z.enum(['national', 'county', 'constituency', 'ward']);
+
+export const tenantCreateSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  slug: slugField,
+  jurisdictionType: jurisdictionTypeField,
+  jurisdictionId: z.string().min(1).optional().nullable(),
+  contactEmail: z.string().trim().email().max(200).optional().nullable(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  modules: z.record(z.string(), z.boolean()).optional(),
+  positionIds: z.array(z.string().min(1)).optional(),
+  admin: z.object({
+    name: z.string().trim().min(1).max(120).optional(),
+    email: z.string().trim().email().max(200),
+    phone: z.string().trim().min(7).max(20).optional().nullable(),
+    password: z.string().min(8).max(200)
+  }).optional()
+}).refine((d) => d.jurisdictionType === 'national' || !!d.jurisdictionId, {
+  message: 'A jurisdiction is required unless the instance is national',
+  path: ['jurisdictionId']
+});
+
+export const tenantUpdateSchema = z.object({
+  name: z.string().trim().min(2).max(160).optional(),
+  jurisdictionType: jurisdictionTypeField.optional(),
+  jurisdictionId: z.string().min(1).optional().nullable(),
+  status: z.enum(['active', 'suspended']).optional(),
+  contactEmail: z.string().trim().email().max(200).optional().nullable(),
+  notes: z.string().trim().max(2000).optional().nullable()
+});
+
+export const tenantModulesSchema = z.object({
+  modules: z.record(z.string(), z.boolean())
+});
+
+export const tenantPositionsSchema = z.object({
+  positionIds: z.array(z.string().min(1))
 });
 
 // Self-service signup now also picks the role and jurisdiction being
@@ -13,6 +55,7 @@ export const loginSchema = z.object({
 // an admin request, never a coordinator. 'aspirant' is view-only and can
 // pick any jurisdiction level, same as a coordinator.
 export const registerSchema = z.object({
+  tenantSlug: z.string().trim().min(1).max(60),
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().email().max(200),
   phone: z.string().trim().min(7).max(20),
@@ -61,36 +104,41 @@ export const agentStatusSchema = z.object({
 });
 
 export const countyCreateSchema = z.object({
-  name: z.string().trim().min(1).max(120)
+  name: z.string().trim().min(1).max(120),
+  code: z.string().trim().min(1).max(20).optional().nullable()
 });
 
-export const countyUpdateSchema = countyCreateSchema;
+export const countyUpdateSchema = countyCreateSchema.partial({ name: true });
 
 export const constituencyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
+  code: z.string().trim().min(1).max(20).optional().nullable(),
   countyId: z.string().min(1).optional().nullable()
 });
 
 export const constituencyUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
+  code: z.string().trim().min(1).max(20).optional().nullable(),
   countyId: z.string().min(1).optional().nullable()
 });
 
 export const wardCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
+  code: z.string().trim().min(1).max(20).optional().nullable(),
   registeredVoters: z.number().int().min(0).max(2000000).optional().default(0),
   constituencyId: z.string().min(1).optional().nullable()
 });
 
 export const wardUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
+  code: z.string().trim().min(1).max(20).optional().nullable(),
   registeredVoters: z.number().int().min(0).max(2000000).optional(),
   constituencyId: z.string().min(1).optional().nullable()
 });
 
 export const stationCreateSchema = z.object({
   code: z.string().trim().min(1).max(30),
-  name: z.string().trim().max(160).optional().nullable(),
+  name: z.string().trim().min(1).max(200),
   wardId: z.string().min(1),
   registered: z.number().int().min(0).max(100000).optional().default(0),
   gpsLat: z.number().min(-90).max(90).optional().nullable(),
@@ -99,7 +147,7 @@ export const stationCreateSchema = z.object({
 
 export const stationUpdateSchema = z.object({
   code: z.string().trim().min(1).max(30).optional(),
-  name: z.string().trim().max(160).optional().nullable(),
+  name: z.string().trim().min(1).max(200).optional(),
   wardId: z.string().min(1).optional(),
   registered: z.number().int().min(0).max(100000).optional(),
   gpsLat: z.number().min(-90).max(90).optional().nullable(),
@@ -107,7 +155,8 @@ export const stationUpdateSchema = z.object({
 });
 
 export const streamCreateSchema = z.object({
-  label: z.string().trim().min(1).max(40),
+  label: z.string().trim().min(1).max(200),
+  code: z.string().trim().min(1).max(30).optional().nullable(),
   registered: z.number().int().min(0).max(100000).optional().default(0)
 });
 
@@ -126,6 +175,10 @@ export const processEventSchema = z.object({
     'polling_opened', 'polling_closed', 'counting_started', 'counting_completed',
     'results_declared', 'materials_departed', 'materials_arrived_tally_centre'
   ]),
+  // Who is confirming this milestone — required, since it's a logged form
+  // rather than an anonymous button click.
+  recordedBy: z.string().trim().min(2, 'Enter the name of the person confirming this').max(120),
+  details: z.record(z.string().max(60), z.string().trim().max(300)).optional().default({}),
   note: z.string().trim().max(500).optional().nullable(),
   ...gpsCapture
 });

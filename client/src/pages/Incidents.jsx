@@ -8,7 +8,7 @@ const EMPTY_FORM = { streamId: '', stationCode: '', wardName: '', note: '', seve
 export default function Incidents() {
   const { user } = useAuth();
   const location = useLocation();
-  const canResolve = user.role === 'coordinator' || user.role === 'admin';
+  const canResolve = user.role === 'coordinator' || user.role === 'admin' || user.role === 'superadmin';
   const [incidents, setIncidents] = useState([]);
   const [streams, setStreams] = useState([]);
   const [form, setForm] = useState({ ...EMPTY_FORM, ...(location.state?.prefill || {}) });

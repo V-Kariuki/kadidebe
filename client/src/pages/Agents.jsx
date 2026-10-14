@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext.jsx';
 
 export default function Agents() {
   const { user } = useAuth();
-  const isStaff = user.role === 'coordinator' || user.role === 'admin';
+  const isStaff = user.role === 'coordinator' || user.role === 'admin' || user.role === 'superadmin';
   const [agents, setAgents] = useState([]);
   const [streams, setStreams] = useState([]);
   const [busyId, setBusyId] = useState(null);

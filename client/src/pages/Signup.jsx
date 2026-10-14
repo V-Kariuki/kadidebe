@@ -9,6 +9,8 @@ export default function Signup() {
   const { register } = useAuth();
   const navigate = useNavigate();
   const [geo, setGeo] = useState(null);
+  const [instances, setInstances] = useState([]);
+  const [tenantSlug, setTenantSlug] = useState('');
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -21,7 +23,10 @@ export default function Signup() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { api.publicGeo().then(setGeo).catch(() => setGeo({ counties: [], constituencies: [], wards: [] })); }, []);
+  useEffect(() => {
+    api.publicGeo().then(setGeo).catch(() => setGeo({ counties: [], constituencies: [], wards: [] }));
+    api.publicInstances().then(setInstances).catch(() => setInstances([]));
+  }, []);
 
   // Agents are always ward-scoped. Admin is always national. Coordinators
   // and aspirants pick their own level.
@@ -46,12 +51,13 @@ export default function Signup() {
 
     if (password !== confirm) return setError('Passwords do not match');
     if (password.length < 8) return setError('Password must be at least 8 characters');
+    if (!tenantSlug) return setError('Please choose which instance you are requesting access to');
     if (jurisdictionType !== 'national' && !jurisdictionId) return setError('Please select a jurisdiction');
 
     setBusy(true);
     try {
       await register({
-        name, email, phone, password, roleRequested, jurisdictionType,
+        tenantSlug, name, email, phone, password, roleRequested, jurisdictionType,
         jurisdictionId: jurisdictionType === 'national' ? null : jurisdictionId
       });
       navigate('/login', {
@@ -79,6 +85,11 @@ export default function Signup() {
         <p className="sub">Request access to Campaign HQ</p>
 
         <form onSubmit={onSubmit}>
+          <label>Instance you're joining</label>
+          <select value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value)} required>
+            <option value="">Select an instance…</option>
+            {instances.map((i) => <option key={i.slug} value={i.slug}>{i.name} — {i.jurisdictionLabel}</option>)}
+          </select>
           <label>Full name</label>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required />
           <label>Email</label>

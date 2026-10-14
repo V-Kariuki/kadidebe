@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
+import { api } from '../api.js';
 
 export default function Login() {
   const { login } = useAuth();
@@ -8,6 +9,9 @@ export default function Login() {
   const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [tenantSlug, setTenantSlug] = useState('');
+  const [needsTenant, setNeedsTenant] = useState(false);
+  const [instances, setInstances] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const notice = location.state?.notice;
@@ -17,10 +21,18 @@ export default function Login() {
     setError('');
     setBusy(true);
     try {
-      await login(email, password);
+      await login(email, password, tenantSlug || undefined);
       navigate(location.state?.from || '/', { replace: true });
     } catch (err) {
-      setError(err.message || 'Login failed');
+      // The same email can exist in several instances, in which case the
+      // server asks which one rather than guessing.
+      if (err.details?.needsTenant || /more than one instance/i.test(err.message || '')) {
+        setNeedsTenant(true);
+        api.publicInstances().then(setInstances).catch(() => setInstances([]));
+        setError('That email is registered in more than one instance — choose which below.');
+      } else {
+        setError(err.message || 'Login failed');
+      }
     } finally {
       setBusy(false);
     }
@@ -46,6 +58,15 @@ export default function Login() {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
           <label>Password</label>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+          {needsTenant && (
+            <>
+              <label>Instance</label>
+              <select value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value)} required>
+                <option value="">Select your instance…</option>
+                {instances.map((i) => <option key={i.slug} value={i.slug}>{i.name} — {i.jurisdictionLabel}</option>)}
+              </select>
+            </>
+          )}
           {error && <div className="form-error">{error}</div>}
           <button type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>

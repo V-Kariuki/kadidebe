@@ -37,6 +37,13 @@ export function runMigrations() {
   migrateResultsForBallotAccounting();
   migrateBookletsForQuantity();
   migrateBallotBoxesForSealLifecycle();
+  migrateCountiesForCode();
+  migrateConstituenciesForCode();
+  migrateWardsForCodeAndScopedUnique();
+  migrateStationsNameRequired();
+  migrateStreamsForCode();
+  migrateToMultiTenant();
+  migrateProcessEventsForForms();
   seedPositions();
 }
 
@@ -427,4 +434,229 @@ function migrateBallotBoxesForSealLifecycle() {
   });
   applyMigration();
   console.log('Migrated ballot_boxes table to add the full seal lifecycle (initial IEBC/agent seals, closing seal, seal-match confirmation, re-seal).');
+}
+
+// Additive: globally unique IEBC-derived codes (see schema.sql's comment
+// on the counties table for exactly how these are constructed). Simple
+// ADD COLUMN + index — no CHECK, no rebuild needed.
+function migrateCountiesForCode() {
+  const cols = db.prepare("PRAGMA table_info('counties')").all();
+  if (!cols.some((c) => c.name === 'code')) {
+    db.exec('ALTER TABLE counties ADD COLUMN code TEXT');
+    console.log('Migrated counties table to add code.');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_counties_code ON counties(code)');
+}
+
+function migrateConstituenciesForCode() {
+  const cols = db.prepare("PRAGMA table_info('constituencies')").all();
+  if (!cols.some((c) => c.name === 'code')) {
+    db.exec('ALTER TABLE constituencies ADD COLUMN code TEXT');
+    console.log('Migrated constituencies table to add code.');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_constituencies_code ON constituencies(code)');
+}
+
+// Wards need more than an ADD COLUMN: ward names are NOT globally unique
+// across Kenya (e.g. "TOWNSHIP" names nine different wards nationally),
+// even though the old schema enforced a global UNIQUE(name). That breaks
+// the instant you import a real national register. The correct constraint
+// is UNIQUE(constituency_id, name) — verified against the actual 2022
+// IEBC register: zero collisions within the same constituency, thousands
+// across different ones. This needs the table-rebuild pattern.
+function migrateWardsForCodeAndScopedUnique() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'wards'").get();
+  if (!row) return;
+  const alreadyDone = row.sql.includes('code TEXT') && !row.sql.includes('name TEXT NOT NULL UNIQUE');
+  if (alreadyDone) return;
+
+  withoutForeignKeys(() => {
+    const applyMigration = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE wards_new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          code TEXT UNIQUE,
+          registered_voters INTEGER NOT NULL DEFAULT 0,
+          constituency_id TEXT REFERENCES constituencies(id),
+          UNIQUE (constituency_id, name)
+        )
+      `);
+      db.exec(`
+        INSERT INTO wards_new (id, name, registered_voters, constituency_id)
+        SELECT id, name, registered_voters, constituency_id FROM wards
+      `);
+      db.exec('DROP TABLE wards');
+      db.exec('ALTER TABLE wards_new RENAME TO wards');
+    });
+    applyMigration();
+  });
+  console.log('Migrated wards table: code column added, uniqueness scoped to (constituency_id, name) instead of a global name UNIQUE.');
+}
+
+// stations.name used to be optional; it's now required. Existing NULL
+// names (if any) are backfilled with the station's code so nothing is
+// silently lost — rename it properly afterward if it matters.
+function migrateStationsNameRequired() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stations'").get();
+  if (!row || row.sql.includes('name TEXT NOT NULL')) return;
+
+  withoutForeignKeys(() => {
+    const applyMigration = db.transaction(() => {
+      db.exec("UPDATE stations SET name = code WHERE name IS NULL OR trim(name) = ''");
+      db.exec(`
+        CREATE TABLE stations_new (
+          id TEXT PRIMARY KEY,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          ward_id TEXT NOT NULL REFERENCES wards(id),
+          registered INTEGER NOT NULL DEFAULT 0,
+          gps_lat REAL,
+          gps_lng REAL
+        )
+      `);
+      db.exec(`
+        INSERT INTO stations_new (id, code, name, ward_id, registered, gps_lat, gps_lng)
+        SELECT id, code, name, ward_id, registered, gps_lat, gps_lng FROM stations
+      `);
+      db.exec('DROP TABLE stations');
+      db.exec('ALTER TABLE stations_new RENAME TO stations');
+    });
+    applyMigration();
+  });
+  console.log('Migrated stations table: name is now required (existing blanks backfilled with the station code).');
+}
+
+// Additive: the full 15-digit globally-unique IEBC polling station code.
+function migrateStreamsForCode() {
+  const cols = db.prepare("PRAGMA table_info('streams')").all();
+  if (!cols.some((c) => c.name === 'code')) {
+    db.exec('ALTER TABLE streams ADD COLUMN code TEXT');
+    console.log('Migrated streams table to add code.');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_streams_code ON streams(code)');
+}
+
+// ---------------------------------------------------------------------
+// Multi-tenancy migration
+//
+// Everything operational gains a tenant_id. An existing single-tenant
+// database is folded into one "default" tenant so no data is orphaned and
+// the app keeps working exactly as before — it simply becomes instance #1.
+// Geography stays shared and untouched.
+// ---------------------------------------------------------------------
+const TENANT_SCOPED_TABLES = [
+  'process_events', 'ballot_boxes', 'ballot_booklets', 'results',
+  'turnout_updates', 'incidents', 'attachments', 'activity', 'audit_log'
+];
+
+function migrateToMultiTenant() {
+  const usersCols = db.prepare("PRAGMA table_info('users')").all().map((c) => c.name);
+  const alreadyDone = usersCols.includes('tenant_id');
+  if (alreadyDone) return;
+
+  // Reuse an existing default tenant if a partial run created one.
+  let defaultTenant = db.prepare("SELECT * FROM tenants WHERE slug = 'default'").get();
+  if (!defaultTenant) {
+    const id = nanoid();
+    db.prepare(`
+      INSERT INTO tenants (id, name, slug, jurisdiction_type, jurisdiction_id, status, notes)
+      VALUES (?, ?, 'default', 'national', NULL, 'active', ?)
+    `).run(id, 'Default Instance', 'Created automatically when this database was migrated to multi-tenant.');
+    defaultTenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+  }
+  const tid = defaultTenant.id;
+
+  withoutForeignKeys(() => {
+    const applyMigration = db.transaction(() => {
+      // users: add tenant_id, widen the role CHECK for 'superadmin', and
+      // move email uniqueness from global to per-tenant. Needs a rebuild.
+      const hasWardId = usersCols.includes('ward_id');
+      db.exec(`
+        CREATE TABLE users_new (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT REFERENCES tenants(id),
+          name TEXT NOT NULL,
+          email TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          role TEXT CHECK (role IS NULL OR role IN ('superadmin', 'admin', 'coordinator', 'agent', 'aspirant')),
+          jurisdiction_type TEXT CHECK (jurisdiction_type IS NULL OR jurisdiction_type IN ('national', 'county', 'constituency', 'ward')),
+          jurisdiction_id TEXT,
+          ward_id TEXT,
+          phone TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'idle', 'disabled', 'pending')),
+          last_check_in TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          failed_login_count INTEGER NOT NULL DEFAULT 0,
+          locked_until TEXT,
+          UNIQUE (tenant_id, email)
+        )
+      `);
+      db.exec(`
+        INSERT INTO users_new (id, tenant_id, name, email, password_hash, role, jurisdiction_type, jurisdiction_id, ward_id, phone, status, last_check_in, created_at, failed_login_count, locked_until)
+        SELECT id, '${tid}', name, email, password_hash, role, jurisdiction_type, jurisdiction_id, ${hasWardId ? 'ward_id' : 'NULL'}, phone, status, last_check_in, created_at, failed_login_count, locked_until
+        FROM users
+      `);
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_new RENAME TO users');
+
+      // Operational tables: plain ADD COLUMN then backfill. SQLite can't
+      // ADD COLUMN ... NOT NULL without a default, so add it nullable,
+      // backfill, and rely on the application layer (plus the fresh-install
+      // schema) to keep it populated going forward.
+      for (const t of TENANT_SCOPED_TABLES) {
+        const cols = db.prepare(`PRAGMA table_info('${t}')`).all().map((c) => c.name);
+        if (!cols.includes('tenant_id')) {
+          db.exec(`ALTER TABLE ${t} ADD COLUMN tenant_id TEXT REFERENCES tenants(id)`);
+        }
+        db.exec(`UPDATE ${t} SET tenant_id = '${tid}' WHERE tenant_id IS NULL`);
+      }
+
+      // stream_agents: composite PK has to include tenant_id, so rebuild.
+      const saCols = db.prepare("PRAGMA table_info('stream_agents')").all().map((c) => c.name);
+      if (!saCols.includes('tenant_id')) {
+        db.exec(`
+          CREATE TABLE stream_agents_new (
+            tenant_id TEXT NOT NULL REFERENCES tenants(id),
+            stream_id TEXT NOT NULL REFERENCES streams(id),
+            agent_id TEXT NOT NULL REFERENCES users(id),
+            assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (tenant_id, stream_id, agent_id)
+          )
+        `);
+        db.exec(`INSERT INTO stream_agents_new (tenant_id, stream_id, agent_id, assigned_at) SELECT '${tid}', stream_id, agent_id, assigned_at FROM stream_agents`);
+        db.exec('DROP TABLE stream_agents');
+        db.exec('ALTER TABLE stream_agents_new RENAME TO stream_agents');
+      }
+
+      // results / ballot_boxes uniqueness must become per-tenant, since two
+      // tenants legitimately record their own figures for the same stream.
+      for (const t of ['results', 'ballot_boxes']) {
+        const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(t)?.sql || '';
+        if (sql.includes('UNIQUE (stream_id, position_id)')) {
+          // Rebuild with the widened constraint, preserving all columns.
+          const cols = db.prepare(`PRAGMA table_info('${t}')`).all().map((c) => c.name);
+          const colList = cols.join(', ');
+          const newSql = sql
+            .replace(`CREATE TABLE ${t}`, `CREATE TABLE ${t}_new`)
+            .replace(`CREATE TABLE "${t}"`, `CREATE TABLE ${t}_new`)
+            .replace('UNIQUE (stream_id, position_id)', 'UNIQUE (tenant_id, stream_id, position_id)');
+          db.exec(newSql);
+          db.exec(`INSERT INTO ${t}_new (${colList}) SELECT ${colList} FROM ${t}`);
+          db.exec(`DROP TABLE ${t}`);
+          db.exec(`ALTER TABLE ${t}_new RENAME TO ${t}`);
+        }
+      }
+    });
+    applyMigration();
+  });
+
+  console.log(`Migrated database to multi-tenant. All existing data assigned to the "${defaultTenant.name}" instance (slug: default).`);
+}
+
+// Event forms: who confirmed each milestone, plus its event-specific fields.
+function migrateProcessEventsForForms() {
+  const cols = db.prepare("PRAGMA table_info('process_events')").all().map((c) => c.name);
+  if (!cols.includes('recorded_by')) db.exec('ALTER TABLE process_events ADD COLUMN recorded_by TEXT');
+  if (!cols.includes('details_json')) db.exec('ALTER TABLE process_events ADD COLUMN details_json TEXT');
 }

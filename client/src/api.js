@@ -5,6 +5,15 @@
 const API_ORIGIN = import.meta.env.VITE_API_URL || '';
 const BASE = API_ORIGIN + '/api';
 
+// Superadmin "view as instance". A superadmin has no tenant of their own, so
+// every tenant-scoped endpoint refuses them. When they open an instance, its
+// id is attached to every request (X-Tenant-Id header, or ?tenantId= where a
+// header can't be sent, e.g. <img src>); the server honours it for
+// superadmins only.
+let viewingTenantId = null;
+export function setViewingTenantId(id) { viewingTenantId = id || null; }
+export function getViewingTenantId() { return viewingTenantId; }
+
 function getCookie(name) {
   const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
   return match ? decodeURIComponent(match[2]) : null;
@@ -24,6 +33,7 @@ async function request(path, options = {}) {
     const csrf = getCookie('ncn_csrf');
     if (csrf) headers['X-CSRF-Token'] = csrf;
   }
+  if (viewingTenantId) headers['X-Tenant-Id'] = viewingTenantId;
 
   const res = await fetch(BASE + path, {
     ...options, method, credentials: 'include', headers,
@@ -48,7 +58,7 @@ async function requestForm(path, formData, method = 'POST') {
   const csrf = getCookie('ncn_csrf');
   const res = await fetch(BASE + path, {
     method, credentials: 'include',
-    headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+    headers: { ...(csrf ? { 'X-CSRF-Token': csrf } : {}), ...(viewingTenantId ? { 'X-Tenant-Id': viewingTenantId } : {}) },
     body: formData
   });
   if (!res.ok) {
@@ -70,7 +80,7 @@ async function uploadFile(path, file) {
 }
 
 async function downloadFile(path, filename) {
-  const res = await fetch(BASE + path, { credentials: 'include' });
+  const res = await fetch(BASE + path, { credentials: 'include', headers: viewingTenantId ? { 'X-Tenant-Id': viewingTenantId } : {} });
   if (!res.ok) {
     handleAuthExpiry(res.status);
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -92,16 +102,29 @@ async function downloadFile(path, filename) {
 // cookie automatically since these stay same-origin (or credentialed via
 // the Vercel proxy).
 export function attachmentUrl(id) {
-  return `${BASE}/attachments/${id}/file`;
+  return `${BASE}/attachments/${id}/file${viewingTenantId ? `?tenantId=${encodeURIComponent(viewingTenantId)}` : ''}`;
 }
 
 export const api = {
-  login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password } }),
+  login: (email, password, tenantSlug) => request('/auth/login', { method: 'POST', body: { email, password, ...(tenantSlug ? { tenantSlug } : {}) } }),
   register: (body) => request('/auth/register', { method: 'POST', body }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   me: () => request('/auth/me'),
   changePassword: (currentPassword, newPassword) => request('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } }),
   publicGeo: () => request('/public/geo'),
+  publicInstances: () => request('/public/instances'),
+
+  // Instance (tenant) configuration
+  tenantConfig: () => request('/tenant/config'),
+
+  // Platform console — superadmin only
+  platformModules: () => request('/platform/modules'),
+  tenants: () => request('/tenants'),
+  tenant: (id) => request(`/tenants/${id}`),
+  createTenant: (body) => request('/tenants', { method: 'POST', body }),
+  updateTenant: (id, body) => request(`/tenants/${id}`, { method: 'PATCH', body }),
+  setTenantModules: (id, modules) => request(`/tenants/${id}/modules`, { method: 'PUT', body: { modules } }),
+  setTenantPositions: (id, positionIds) => request(`/tenants/${id}/positions`, { method: 'PUT', body: { positionIds } }),
 
   overview: (scopeType, scopeId) => {
     const params = scopeType ? new URLSearchParams({ scopeType, ...(scopeId ? { scopeId } : {}) }) : null;
@@ -124,6 +147,8 @@ export const api = {
   deleteWard: (id) => request(`/wards/${id}`, { method: 'DELETE' }),
   importWards: (file) => uploadFile('/wards/import', file),
   downloadWardTemplate: () => downloadFile('/wards/import-template', 'wards-template.csv'),
+  importRegister: (file) => uploadFile('/register/import', file),
+  downloadRegisterTemplate: () => downloadFile('/register/import-template', 'register-template.csv'),
 
   stations: () => request('/stations'),
   createStation: (body) => request('/stations', { method: 'POST', body }),
@@ -214,7 +239,7 @@ export function connectLiveSync(onMessage) {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     wsUrl = `${protocol}://${window.location.host}/ws`;
   }
-  const socket = new WebSocket(wsUrl);
+  const socket = new WebSocket(viewingTenantId ? `${wsUrl}?tenantId=${encodeURIComponent(viewingTenantId)}` : wsUrl);
   socket.onmessage = (event) => {
     try { onMessage(JSON.parse(event.data)); } catch { /* ignore malformed frames */ }
   };

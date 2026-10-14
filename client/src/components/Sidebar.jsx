@@ -1,19 +1,30 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 
-const ROLE_LABEL = { admin: 'Administrator', coordinator: 'Campaign Coordinator', agent: 'Field Agent', aspirant: 'Aspirant (view-only)' };
+const ROLE_LABEL = {
+  superadmin: 'Platform Administrator', admin: 'Administrator',
+  coordinator: 'Campaign Coordinator', agent: 'Field Agent', aspirant: 'Aspirant (view-only)'
+};
 
 export default function Sidebar() {
-  const { user, logout } = useAuth();
+  const { user, tenant, logout, hasModule, viewInstance } = useAuth();
   const navigate = useNavigate();
   const initials = (user?.name || '?').split(' ').map((s) => s[0]).join('').slice(0, 2).toUpperCase();
-  const isStaff = user?.role === 'coordinator' || user?.role === 'admin';
+  const isSuper = user?.role === 'superadmin';
+  const isStaff = user?.role === 'coordinator' || user?.role === 'admin' || isSuper;
   const canView = isStaff || user?.role === 'aspirant';
+  // A superadmin has no instance of their own, so the operational screens
+  // only make sense once they've opened one.
+  const inInstance = !isSuper || !!tenant;
 
-  async function handleLogout() {
-    await logout();
-    navigate('/');
-  }
+  async function handleLogout() { await logout(); navigate('/'); }
+  async function exitInstance() { await viewInstance(null); navigate('/platform'); }
+
+  const item = (to, label, opts = {}) => (
+    <NavLink to={to} end={opts.end} className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}>
+      <span className="dot"></span> {label}
+    </NavLink>
+  );
 
   return (
     <aside className="sidebar">
@@ -25,31 +36,53 @@ export default function Sidebar() {
             <circle cx="17" cy="15" r="3.2" fill="#E8A33D" />
           </svg>
         </div>
-        <div className="brand-text">Niko Kadi<br />Twende kwa Debe<span>Campaign HQ</span></div>
+        <div className="brand-text">
+          {tenant ? tenant.name : 'Niko Kadi'}
+          <span>{tenant ? `${tenant.jurisdictionLabel} instance` : 'Platform Console'}</span>
+        </div>
       </div>
 
+      {isSuper && tenant && (
+        <div className="form-notice" style={{ margin: '0 0 12px', fontSize: 11.5 }}>
+          Viewing as <b>{tenant.name}</b>
+          <button className="btn-sm" style={{ marginTop: 8, width: '100%' }} onClick={exitInstance}>← Back to platform</button>
+        </div>
+      )}
+
       <nav>
-        <div className="nav-label">Monitor</div>
-        <NavLink to="/" end className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Overview</NavLink>
-        <NavLink to="/stations" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Polling Stations</NavLink>
-        <NavLink to="/results" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Results</NavLink>
-        {canView && <NavLink to="/reports" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Turnout & Reports</NavLink>}
-
-        <div className="nav-label" style={{ marginTop: 10 }}>Ground Game</div>
-        {canView && <NavLink to="/agents" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Agents</NavLink>}
-        <NavLink to="/incidents" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Incidents</NavLink>
-
-        {isStaff && (
+        {isSuper && (
           <>
-            <div className="nav-label" style={{ marginTop: 10 }}>Admin</div>
-            <NavLink to="/users" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Users</NavLink>
-            {user?.role === 'admin' && <NavLink to="/audit" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Audit Log</NavLink>}
+            <div className="nav-label">Platform</div>
+            {item('/platform', 'Instances')}
+            {item('/platform/register', 'Shared register')}
+          </>
+        )}
+
+        {inInstance && (
+          <>
+            <div className="nav-label" style={{ marginTop: isSuper ? 10 : 0 }}>Monitor</div>
+            {item('/', 'Overview', { end: true })}
+            {hasModule('stations') && item('/stations', 'Polling Stations')}
+            {hasModule('results') && item('/results', 'Results')}
+            {canView && hasModule('reports') && item('/reports', 'Turnout & Reports')}
+
+            <div className="nav-label" style={{ marginTop: 10 }}>Ground Game</div>
+            {canView && hasModule('agents') && item('/agents', 'Agents')}
+            {hasModule('incidents') && item('/incidents', 'Incidents')}
+
+            {isStaff && (
+              <>
+                <div className="nav-label" style={{ marginTop: 10 }}>Admin</div>
+                {item('/users', 'Users')}
+                {hasModule('audit') && item('/audit', 'Audit Log')}
+              </>
+            )}
           </>
         )}
 
         <div className="nav-label" style={{ marginTop: 10 }}></div>
-        {isStaff && <NavLink to="/settings/team" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Team &amp; Structure</NavLink>}
-        <NavLink to="/settings" className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}><span className="dot"></span> Profile</NavLink>
+        {isStaff && inInstance && item('/settings/team', 'Team & Structure')}
+        {item('/settings', 'Profile')}
       </nav>
 
       <div className="sidebar-footer">

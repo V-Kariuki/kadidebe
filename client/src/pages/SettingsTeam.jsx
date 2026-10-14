@@ -3,8 +3,9 @@ import { useAuth } from '../auth/AuthContext.jsx';
 import { api } from '../api.js';
 
 export default function SettingsTeam() {
-  const { user } = useAuth();
-  const isStaff = user?.role === 'coordinator' || user?.role === 'admin';
+  const { user, tenant } = useAuth();
+  const isStaff = user?.role === 'coordinator' || user?.role === 'admin' || user?.role === 'superadmin';
+  const isSuperadmin = user?.role === 'superadmin';
 
   return (
     <>
@@ -15,8 +16,14 @@ export default function SettingsTeam() {
         </div>
       </div>
 
-      {user?.role === 'admin' && <AdminStructure />}
-      {isStaff && <TeamAssignments />}
+      {isSuperadmin && !tenant && (
+        <div className="form-notice" style={{ marginBottom: 16 }}>
+          You're viewing the shared register, which isn't tied to any one instance. To manage an
+          instance's team and agent assignments, open it from <b>Instances</b> first.
+        </div>
+      )}
+      {(user?.role === 'admin' || isSuperadmin) && <AdminStructure />}
+      {isStaff && tenant && <TeamAssignments />}
     </>
   );
 }
@@ -379,6 +386,8 @@ function AdminStructure() {
         </div>
       </div>
 
+      <RegisterImport onImported={reload} />
+
       <div className="grid-2" style={{ marginTop: 16 }}>
         <div className="panel">
           <div className="panel-head">
@@ -430,6 +439,82 @@ function AdminStructure() {
 // agents to specific streams. Both operate on server-scoped lists, so a
 // ward coordinator only ever sees their own ward's agents and streams.
 // ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// Official register import — the full IEBC "Registered Voters per Polling
+// Station" file, which builds the entire county → constituency → ward →
+// station → stream hierarchy in one pass using globally unique codes.
+// ---------------------------------------------------------------------
+
+function RegisterImport({ onImported }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+  const inputRef = useRef(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!file) return;
+    setBusy(true); setError(''); setResult(null);
+    try {
+      const res = await api.importRegister(file);
+      setResult(res);
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = '';
+      onImported?.();
+    } catch (err) {
+      setError(err.message || 'Import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="panel" style={{ marginTop: 16 }}>
+      <div className="panel-head">
+        <h2>Import official register</h2>
+        <span className="sub">Builds counties, constituencies, wards, stations and streams in one pass</span>
+      </div>
+      <p className="dim" style={{ fontSize: 12, lineHeight: 1.6, marginBottom: 10 }}>
+        Upload the IEBC "Registered Voters per Polling Station" CSV. Entities are matched on their official
+        codes, not names, so re-importing a corrected file updates in place rather than creating duplicates.
+        Anything you created manually (without an official code) is left untouched.
+      </p>
+      <form onSubmit={submit} className="stack-form">
+        <input ref={inputRef} type="file" accept=".csv,text/csv" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+        {error && <div className="form-error">{error}</div>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <button type="submit" className="primary" disabled={busy || !file}>{busy ? 'Importing… (this can take a moment)' : 'Import register'}</button>
+          <button type="button" className="btn-sm" onClick={() => api.downloadRegisterTemplate()}>Download template</button>
+        </div>
+      </form>
+      {result && (
+        <div className="dim" style={{ fontSize: 12, marginTop: 12, lineHeight: 1.7 }}>
+          <b style={{ color: 'var(--green)' }}>Imported {result.rowsRead.toLocaleString()} rows.</b>
+          <table style={{ marginTop: 8 }}>
+            <thead><tr><th></th><th>Created</th><th>Updated</th></tr></thead>
+            <tbody>
+              <tr><td>Counties</td><td className="mono">{result.countiesCreated}</td><td className="mono">{result.countiesUpdated}</td></tr>
+              <tr><td>Constituencies</td><td className="mono">{result.constituenciesCreated}</td><td className="mono">{result.constituenciesUpdated}</td></tr>
+              <tr><td>Wards</td><td className="mono">{result.wardsCreated}</td><td className="mono">{result.wardsUpdated}</td></tr>
+              <tr><td>Stations</td><td className="mono">{result.stationsCreated}</td><td className="mono">{result.stationsUpdated}</td></tr>
+              <tr><td>Streams</td><td className="mono">{result.streamsCreated}</td><td className="mono">{result.streamsUpdated}</td></tr>
+            </tbody>
+          </table>
+          {result.skippedTotal > 0 && (
+            <div style={{ marginTop: 8, color: 'var(--red)' }}>
+              {result.skippedTotal} row(s) skipped{result.skipped.length < result.skippedTotal ? ` (first ${result.skipped.length} shown)` : ''}:
+              <ul style={{ margin: '4px 0 0 18px' }}>
+                {result.skipped.map((s, i) => <li key={i}>line {s.row}: {s.reason}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TeamAssignments() {
   const [agents, setAgents] = useState(null);

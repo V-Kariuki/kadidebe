@@ -19,6 +19,7 @@ export function signToken(user) {
   return jwt.sign(
     {
       sub: user.id,
+      tenantId: user.tenant_id || null,
       email: user.email,
       name: user.name,
       role: user.role,
@@ -88,6 +89,11 @@ export function requireCsrf(req, res, next) {
 
 export function requireRole(...roles) {
   return (req, res, next) => {
+    // Superadmin sits above every tenant role and is never excluded by a
+    // role allowlist — without this, every requireRole(...) guard in the
+    // app (there are dozens) silently locks the platform operator out,
+    // since 'superadmin' was never in any of those lists.
+    if (req.user?.role === 'superadmin') return next();
     if (!req.user || !roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'You do not have permission to do that' });
     }
